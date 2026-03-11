@@ -21,6 +21,18 @@ _ALLOWED_TAGS = {
 }
 _ALLOWED_ATTRIBUTES = {"a": {"href"}}
 
+EMAIL_SIGNATURE = (
+    '<br><p>Cheers<br>'
+    '--<br>'
+    '<strong>Bill Johnson</strong><br>'
+    'Chief Product &amp; Technology Officer (CPTO)</p>'
+    '<p><a href="https://www.scribendi.com">Scribendi</a> | '
+    '<a href="https://www.edanz.com">Edanz</a> | '
+    '<a href="https://www.liwenbianji.cn">Liwenbianji</a></p>'
+    '<p>1 (877) 351-1626 ext. 705 &nbsp;| '
+    '<a href="mailto:bill.johnson@scribendi.com">bill.johnson@scribendi.com</a></p>'
+)
+
 _credential: ClientSecretCredential | None = None
 
 
@@ -189,7 +201,7 @@ def send_recap(
 ) -> None:
     formatted_date = _format_date(date_str)
     subject = f"[Meeting Recap] {title} \u2014 {formatted_date}"
-    html_body = _markdown_to_safe_html(summary_markdown)
+    html_body = _markdown_to_safe_html(summary_markdown) + EMAIL_SIGNATURE
     payload = _build_payload(to=to, cc=cc, subject=subject, html_body=html_body)
     _post_mail(payload)
     logger.info(
@@ -210,7 +222,7 @@ def save_draft(
 ) -> str:
     formatted_date = _format_date(date_str)
     subject = f"[Meeting Recap] {title} \u2014 {formatted_date}"
-    html_body = _markdown_to_safe_html(summary_markdown)
+    html_body = _markdown_to_safe_html(summary_markdown) + EMAIL_SIGNATURE
     payload = _build_draft_payload(to=to, cc=cc, subject=subject, html_body=html_body)
     draft_id = _create_draft(payload)
     logger.info(

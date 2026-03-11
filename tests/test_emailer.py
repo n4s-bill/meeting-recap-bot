@@ -120,6 +120,40 @@ class TestHTMLBody:
         assert "<code>" in result
 
 
+class TestEmailSignature:
+    @respx.mock
+    def test_send_recap_includes_signature(self, mock_token):
+        route = respx.post(GRAPH_SEND_URL).mock(return_value=httpx.Response(202))
+        em.send_recap("m-1", "T", "2026-01-01T00:00:00Z", ["a@b.com"], [], SAMPLE_MARKDOWN)
+        import json
+        body = json.loads(route.calls[0].request.content)
+        html = body["message"]["body"]["content"]
+        assert "Bill Johnson" in html
+        assert "Chief Product &amp; Technology Officer (CPTO)" in html
+        assert "bill.johnson@scribendi.com" in html
+
+    @respx.mock
+    def test_draft_includes_signature(self, mock_token):
+        route = respx.post(GRAPH_DRAFT_URL).mock(
+            return_value=httpx.Response(201, json={"id": "draft-abc"})
+        )
+        em.save_draft("m-1", "T", "2026-01-01T00:00:00Z", ["a@b.com"], [], SAMPLE_MARKDOWN)
+        import json
+        body = json.loads(route.calls[0].request.content)
+        html = body["body"]["content"]
+        assert "Bill Johnson" in html
+        assert "Chief Product &amp; Technology Officer (CPTO)" in html
+
+    @respx.mock
+    def test_failure_notification_has_no_signature(self, mock_token):
+        route = respx.post(GRAPH_SEND_URL).mock(return_value=httpx.Response(202))
+        em.send_failure_notification("m-1", "T", "2026-01-01T00:00:00Z", "error")
+        import json
+        body = json.loads(route.calls[0].request.content)
+        html = body["message"]["body"]["content"]
+        assert "Bill Johnson" not in html
+
+
 class TestGraphRestCall:
     @respx.mock
     def test_posts_to_correct_url(self, mock_token):
