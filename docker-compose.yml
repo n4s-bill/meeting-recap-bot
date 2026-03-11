@@ -1,0 +1,17 @@
+services:
+  recap-bot:
+    build: .
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./processed_meetings.json:/app/processed_meetings.json
+      - ./instructions.md:/app/instructions.md
+      - ./meeting_types.json:/app/meeting_types.json
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3

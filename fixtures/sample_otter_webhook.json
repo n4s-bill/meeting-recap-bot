@@ -1,0 +1,10 @@
+{
+  "meeting_id": "test-meeting-001",
+  "title": "Weekly Engineering Standup",
+  "date": "2026-03-10T14:00:00Z",
+  "participants": [
+    "alice@scribendi.com",
+    "bob@scribendi.com"
+  ],
+  "transcript": "Alice: Good morning everyone. Let's go through the standup updates.\n\nBob: I worked on the API refactor yesterday. Today I'm continuing with the test coverage.\n\nAlice: Great. Any blockers?\n\nBob: No blockers at the moment.\n\nAlice: Perfect. Let's wrap up. Thanks everyone."
+}

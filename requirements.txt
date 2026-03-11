@@ -1,0 +1,10 @@
+openai==2.26.0
+azure-identity==1.25.2
+fastapi==0.129.2
+uvicorn[standard]==0.41.0
+python-dotenv==1.2.2
+Markdown==3.10.2
+nh3==0.3.3
+httpx==0.28.1
+filelock==3.17.0
+pydantic==2.12.5
