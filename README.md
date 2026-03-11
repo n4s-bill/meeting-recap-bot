@@ -11,11 +11,60 @@ Otter.ai transcript completed
   -> Deduplicate, resolve recipients, summarize, send email
 ```
 
+### Pipeline Steps
+
+1. **Authentication** -- verify the webhook secret (`X-Webhook-Secret` header or `Authorization: Bearer` token).
+2. **Validation** -- parse the JSON payload into a Pydantic model (`WebhookPayload`).
+3. **Deduplication** -- check `processed_meetings.json` (file-locked) to skip already-handled meetings.
+4. **Recipient resolution** -- three-tier fallback (see [Recipient Resolution](#11-recipient-resolution)).
+5. **Transcript truncation** -- trim to `MAX_TRANSCRIPT_CHARS` if needed.
+6. **Summarization** -- call OpenAI with `instructions.md` as the system prompt (3 retries with exponential backoff).
+7. **Email delivery** -- send via Microsoft Graph or save as a draft, depending on `EMAIL_MODE` (3 retries with exponential backoff). On summarization failure, a failure notification is sent to the CC address.
+8. **Dedup record** -- mark the meeting as processed only after successful delivery.
+
+---
+
+## Project Structure
+
+```
+meeting-recap-bot/
+├── main.py                  # Entrypoint: configures logging, validates config, starts uvicorn
+├── webhook_server.py        # FastAPI app with /health and /webhook/transcript endpoints
+├── pipeline.py              # Orchestrates the full processing pipeline
+├── models.py                # Pydantic models (WebhookPayload, Participant)
+├── summarizer.py            # OpenAI summarization with retry logic
+├── emailer.py               # Microsoft Graph email (send, draft, failure notification)
+├── recipient_resolver.py    # Three-tier recipient resolution
+├── meeting_type_config.py   # Loads and matches meeting_types.json distro lists
+├── storage.py               # File-locked JSON deduplication store
+├── config.py                # Environment variable loading and validation
+├── instructions.md          # OpenAI system prompt for summary generation
+├── meeting_types.json       # Meeting-type -> distribution list mapping
+├── processed_meetings.json  # Deduplication state (volume-mounted in Docker)
+├── fixtures/
+│   └── sample_otter_webhook.json  # Sample payload for testing
+├── tests/
+│   ├── conftest.py
+│   ├── test_webhook_server.py
+│   ├── test_pipeline_integration.py
+│   ├── test_emailer.py
+│   ├── test_summarizer.py
+│   ├── test_recipient_resolver.py
+│   ├── test_storage.py
+│   └── test_meeting_type_config.py
+├── Dockerfile
+├── docker-compose.yml
+├── requirements.txt
+├── requirements-dev.txt
+├── .env.example
+└── .gitignore
+```
+
 ---
 
 ## Prerequisites
 
-- Docker and Docker Compose
+- Python 3.12+ (or Docker)
 - An OpenAI API key
 - An Azure AD app registration with `Mail.Send` Application permission (see below)
 - A Zapier account with the Otter.ai integration enabled
@@ -33,11 +82,12 @@ Before you can send email via Microsoft Graph, you need an Azure AD app registra
 2. Name it (e.g. `meeting-recap-bot`), select **Accounts in this organizational directory only**, click Register.
 3. Copy the **Application (client) ID** and **Directory (tenant) ID** -- you'll need these.
 
-### Add Mail.Send permission
+### Add API permissions
 
 1. In your app registration, go to **API permissions** -> Add a permission -> Microsoft Graph -> Application permissions.
-2. Search for `Mail.Send` and add it.
-3. Click **Grant admin consent** for your organization. This step is required -- the app will not be able to send email without it.
+2. Search for `Mail.Send` and add it. This is required for sending emails.
+3. If you plan to use draft mode (`EMAIL_MODE=draft`), also add `Mail.ReadWrite`.
+4. Click **Grant admin consent** for your organization. The app will not be able to send email without it.
 
 ### Create a client secret
 
@@ -90,13 +140,16 @@ cp .env.example .env
 | `MS_GRAPH_CLIENT_SECRET` | Yes | Azure AD app client secret |
 | `MS_GRAPH_TENANT_ID` | Yes | Azure AD tenant ID |
 | `EMAIL_FROM` | Yes | Sender mailbox (must have Graph `Mail.Send` permission) |
-| `WEBHOOK_SECRET` | Yes | Shared secret sent by Zapier in `X-Webhook-Secret` header |
+| `WEBHOOK_SECRET` | Yes | Shared secret sent by Zapier in `X-Webhook-Secret` header (also accepts `Authorization: Bearer` token) |
 | `EMAIL_CC` | No | CC on all emails (default: `bill.johnson@scribendi.com`) |
+| `EMAIL_MODE` | No | `send` delivers immediately, `draft` saves to the sender's Drafts folder for manual review (default: `send`). Draft mode requires `Mail.ReadWrite` permission. |
 | `MAX_TRANSCRIPT_CHARS` | No | Truncation threshold (default: `100000`) |
 | `OPENAI_MODEL` | No | OpenAI model (default: `gpt-4o`) |
 | `WEBHOOK_HOST` | No | Bind host (default: `0.0.0.0`) |
 | `WEBHOOK_PORT` | No | Bind port (default: `8000`) |
 | `LOG_LEVEL` | No | Logging level (default: `INFO`) |
+| `STORAGE_FILE` | No | Path to the deduplication JSON file (default: `processed_meetings.json`) |
+| `MEETING_TYPES_FILE` | No | Path to the meeting-type distro list file (default: `meeting_types.json`) |
 
 ---
 
@@ -143,7 +196,14 @@ docker compose logs -f recap-bot
 docker compose down
 ```
 
-The `processed_meetings.json` deduplication file is volume-mounted and persists across container restarts.
+The `processed_meetings.json` deduplication file is volume-mounted and persists across container restarts. `instructions.md` and `meeting_types.json` are also volume-mounted so you can edit them without rebuilding.
+
+### Running without Docker
+
+```bash
+pip install -r requirements.txt
+python main.py
+```
 
 ---
 
@@ -184,7 +244,29 @@ The tunnel URL (`https://recap.yourdomain.com`) is stable across restarts.
    - Headers: `X-Webhook-Secret: <your WEBHOOK_SECRET value>`
 4. Test the Zap with a real Otter.ai transcript.
 
-> **Important:** Before finalizing the Pydantic model, capture the actual Zapier payload by deploying a raw logging endpoint first (see [Payload Capture](#8-payload-capture)).
+### Webhook payload schema
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `meeting_id` | string | Yes | Unique ID to deduplicate |
+| `title` | string | Yes | Used for subject line and distro matching |
+| `date` | string | No | ISO 8601 format (e.g. `2026-03-10T14:00:00Z`) |
+| `participants` | list or string | No | JSON array of `{name, email, permission}` objects, or Zapier's newline-delimited text block |
+| `transcript` | string | Yes | Full meeting transcript |
+
+Extra fields in the payload are accepted and logged at debug level.
+
+The `participants` field supports both a JSON array and Zapier's text format:
+
+```
+email: alice@co.com
+name: Alice
+permission: None
+
+email: bob@co.com
+name: Bob
+permission: None
+```
 
 ---
 
@@ -205,17 +287,6 @@ The placeholder payload in `fixtures/sample_otter_webhook.json` is for developme
 ---
 
 ## 9. Manual Testing with curl
-
-### Start the service
-
-```bash
-# Docker
-docker compose up --build
-
-# Or directly
-pip install -r requirements.txt
-python main.py
-```
 
 ### Verify health
 
@@ -255,6 +326,15 @@ curl -X POST http://localhost:8000/webhook/transcript \
 # Expected: 401 Unauthorized
 ```
 
+### Using Bearer token authentication
+
+```bash
+curl -X POST http://localhost:8000/webhook/transcript \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <your-secret>" \
+  -d @fixtures/sample_otter_webhook.json
+```
+
 ### Reset deduplication for re-testing
 
 Delete the processed entry from `processed_meetings.json`, or delete the file entirely.
@@ -274,6 +354,12 @@ pytest tests/ -v
 pytest tests/ -v --cov=. --cov-report=term-missing
 ```
 
+### Test dependencies
+
+- **pytest** -- test runner
+- **pytest-asyncio** -- async test support for FastAPI endpoint tests
+- **respx** -- HTTP request mocking for Microsoft Graph and OpenAI calls
+
 ---
 
 ## 11. Recipient Resolution
@@ -284,11 +370,33 @@ The service uses a three-tier fallback to determine who receives each recap:
 2. **Meeting-type distro list** -- if no participant emails are present, the meeting title is matched against `meeting_types.json` and the mapped list is used.
 3. **Bill fallback** -- if neither source produces recipients, the email is sent only to `EMAIL_CC` (Bill).
 
-Bill is always CC'd unless he is the sole `To` recipient (tier 3).
+Bill is always CC'd unless he is already a `To` recipient or is the sole recipient (tier 3).
 
 ---
 
-## 12. Troubleshooting
+## 12. Email Delivery
+
+### Send mode (default)
+
+Emails are sent immediately via the Microsoft Graph `sendMail` endpoint. On success the meeting is marked processed. On failure after 3 retries the request returns a 500 error.
+
+### Draft mode
+
+Set `EMAIL_MODE=draft` to save recaps to the sender's Drafts folder instead of sending. This is useful for manual review before delivery. Requires the `Mail.ReadWrite` Azure AD permission in addition to `Mail.Send`.
+
+### Failure notifications
+
+If OpenAI summarization fails (after 3 retries), the service sends a failure notification email to the CC address so the summary can be generated manually. The meeting is **not** marked as processed, so a retry via re-triggering the webhook will work.
+
+### Email format
+
+- Summaries are converted from Markdown to sanitized HTML using `python-markdown` and `nh3`.
+- A hardcoded email signature is appended to every recap.
+- Subject line format: `[Meeting Recap] <title> — <date>`
+
+---
+
+## 13. Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
@@ -299,16 +407,16 @@ Bill is always CC'd unless he is the sole `To` recipient (tier 3).
 | No email received | Exchange Online access policy | Ask Exchange admin to add app to sender mailbox policy |
 | Zapier stops sending | Tunnel URL changed | Restart tunnel and update Zapier Zap URL |
 | Summary quality degraded | `instructions.md` was modified | Restore original file from version control |
+| `422` from webhook | Payload field names don't match model | Check `models.py` field names against actual Zapier payload |
 
 ---
 
-## 13. What Is Not in v1
+## 14. What Is Not in v1
 
 - Otter.ai REST API polling (Zapier webhook only)
 - Cloud deployment (local Docker only)
 - Web dashboard
-- Database storage
+- Database storage (uses flat JSON file)
 - Monday.com integration
-- Action-item extraction
 - Multi-pass summarization for very long transcripts
 - Automatic `processed_meetings.json` cleanup
