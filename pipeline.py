@@ -34,9 +34,10 @@ def process_meeting(payload: WebhookPayload) -> ProcessingResult:
         return ProcessingResult(status=ProcessingStatus.DUPLICATE)
 
     # Step 2: Resolve recipients
+    participant_emails = [p.email for p in (payload.participants or []) if p.email]
     resolved = recipient_resolver.resolve(
         title=title,
-        participants=list(payload.participants or []),
+        participants=participant_emails,
     )
     logger.info(
         "[%s] Recipients resolved: to=%s, cc=%s",

@@ -13,7 +13,10 @@ SAMPLE_PAYLOAD = {
     "meeting_id": "test-meeting-001",
     "title": "Weekly Engineering Standup",
     "date": "2026-03-10T14:00:00Z",
-    "participants": ["alice@scribendi.com", "bob@scribendi.com"],
+    "participants": [
+        {"name": "Alice", "email": "alice@scribendi.com", "permission": "..."},
+        {"name": "Bob", "email": "bob@scribendi.com", "permission": "..."},
+    ],
     "transcript": "Alice: Good morning. Bob: Good morning.",
 }
 
