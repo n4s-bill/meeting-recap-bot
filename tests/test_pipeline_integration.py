@@ -19,6 +19,7 @@ VALID_SECRET = "integration-secret"
 SENDER_EMAIL = "sender@scribendi.com"
 BILL_EMAIL = "bill.johnson@scribendi.com"
 GRAPH_SEND_URL = f"https://graph.microsoft.com/v1.0/users/{SENDER_EMAIL}/sendMail"
+GRAPH_DRAFT_URL = f"https://graph.microsoft.com/v1.0/users/{SENDER_EMAIL}/messages"
 
 SAMPLE_PAYLOAD = {
     "meeting_id": "int-test-001",
@@ -42,6 +43,7 @@ def patch_all_config(monkeypatch, storage_file, meeting_types_file, tmp_path):
     monkeypatch.setattr(config, "MS_GRAPH_CLIENT_SECRET", "secret")
     monkeypatch.setattr(config, "OPENAI_API_KEY", "sk-fake")
     monkeypatch.setattr(config, "OPENAI_MODEL", "gpt-4o")
+    monkeypatch.setattr(config, "EMAIL_MODE", "send")
 
     monkeypatch.setattr(st, "STORAGE_FILE", storage_file)
     monkeypatch.setattr(st, "_LOCK_FILE", storage_file + ".lock")
@@ -233,3 +235,47 @@ class TestOversizedTranscript:
         messages = call_kwargs.kwargs["messages"]
         user_msg = next(m for m in messages if m["role"] == "user")
         assert "[Transcript truncated due to size limit]" in user_msg["content"]
+
+
+class TestDraftMode:
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_draft_mode_creates_draft_instead_of_sending(
+        self, client, mock_openai_client, mock_token, monkeypatch, storage_file
+    ):
+        monkeypatch.setattr(config, "EMAIL_MODE", "draft")
+        send_route = respx.post(GRAPH_SEND_URL).mock(return_value=httpx.Response(202))
+        draft_route = respx.post(GRAPH_DRAFT_URL).mock(
+            return_value=httpx.Response(201, json={"id": "draft-xyz"})
+        )
+
+        resp = await _post_webhook(client)
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "processed"
+        assert draft_route.called
+        assert not send_route.called
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_draft_mode_marks_meeting_processed(
+        self, client, mock_openai_client, mock_token, monkeypatch, storage_file
+    ):
+        monkeypatch.setattr(config, "EMAIL_MODE", "draft")
+        respx.post(GRAPH_DRAFT_URL).mock(
+            return_value=httpx.Response(201, json={"id": "draft-xyz"})
+        )
+
+        await _post_webhook(client)
+        assert st.is_processed("int-test-001")
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_draft_failure_returns_500(
+        self, client, mock_openai_client, mock_token, monkeypatch, storage_file
+    ):
+        monkeypatch.setattr(config, "EMAIL_MODE", "draft")
+        respx.post(GRAPH_DRAFT_URL).mock(return_value=httpx.Response(503))
+
+        resp = await _post_webhook(client)
+        assert resp.status_code == 500
+        assert not st.is_processed(SAMPLE_PAYLOAD["meeting_id"])

@@ -9,6 +9,7 @@ import emailer as em
 EMAIL_FROM = "sender@scribendi.com"
 EMAIL_CC_ADDR = "bill.johnson@scribendi.com"
 GRAPH_SEND_URL = f"https://graph.microsoft.com/v1.0/users/{EMAIL_FROM}/sendMail"
+GRAPH_DRAFT_URL = f"https://graph.microsoft.com/v1.0/users/{EMAIL_FROM}/messages"
 
 SAMPLE_MARKDOWN = "# Sprint Review\n\n- Completed 8 tickets\n- No blockers\n"
 
@@ -167,3 +168,68 @@ class TestFailureNotification:
         import json
         body = json.loads(route.calls[0].request.content)
         assert "RateLimitError occurred" in body["message"]["body"]["content"]
+
+
+class TestSaveDraft:
+    @respx.mock
+    def test_posts_to_draft_url(self, mock_token):
+        route = respx.post(GRAPH_DRAFT_URL).mock(
+            return_value=httpx.Response(201, json={"id": "draft-abc"})
+        )
+        em.save_draft("m-1", "Sprint Review", "2026-03-10T14:00:00Z", ["alice@co.com"], [EMAIL_CC_ADDR], SAMPLE_MARKDOWN)
+        assert route.called
+
+    @respx.mock
+    def test_draft_returns_id(self, mock_token):
+        respx.post(GRAPH_DRAFT_URL).mock(
+            return_value=httpx.Response(201, json={"id": "draft-abc"})
+        )
+        draft_id = em.save_draft("m-1", "T", "2026-01-01T00:00:00Z", ["a@b.com"], [], SAMPLE_MARKDOWN)
+        assert draft_id == "draft-abc"
+
+    @respx.mock
+    def test_draft_subject_format(self, mock_token):
+        route = respx.post(GRAPH_DRAFT_URL).mock(
+            return_value=httpx.Response(201, json={"id": "draft-abc"})
+        )
+        em.save_draft("m-1", "Sprint Review", "2026-03-10T14:00:00Z", ["alice@co.com"], [], SAMPLE_MARKDOWN)
+        import json
+        body = json.loads(route.calls[0].request.content)
+        assert body["subject"].startswith("[Meeting Recap]")
+
+    @respx.mock
+    def test_draft_payload_has_no_send_wrapper(self, mock_token):
+        route = respx.post(GRAPH_DRAFT_URL).mock(
+            return_value=httpx.Response(201, json={"id": "draft-abc"})
+        )
+        em.save_draft("m-1", "T", "2026-01-01T00:00:00Z", ["a@b.com"], [], SAMPLE_MARKDOWN)
+        import json
+        body = json.loads(route.calls[0].request.content)
+        assert "message" not in body
+        assert "saveToSentItems" not in body
+        assert "subject" in body
+        assert "toRecipients" in body
+
+    @respx.mock
+    def test_draft_recipients_match(self, mock_token):
+        route = respx.post(GRAPH_DRAFT_URL).mock(
+            return_value=httpx.Response(201, json={"id": "draft-abc"})
+        )
+        em.save_draft("m-1", "T", "2026-01-01T00:00:00Z", ["alice@co.com", "bob@co.com"], [EMAIL_CC_ADDR], SAMPLE_MARKDOWN)
+        import json
+        body = json.loads(route.calls[0].request.content)
+        to_addrs = [r["emailAddress"]["address"] for r in body["toRecipients"]]
+        cc_addrs = [r["emailAddress"]["address"] for r in body["ccRecipients"]]
+        assert to_addrs == ["alice@co.com", "bob@co.com"]
+        assert EMAIL_CC_ADDR in cc_addrs
+
+    @respx.mock
+    def test_draft_body_is_html(self, mock_token):
+        route = respx.post(GRAPH_DRAFT_URL).mock(
+            return_value=httpx.Response(201, json={"id": "draft-abc"})
+        )
+        em.save_draft("m-1", "T", "2026-01-01T00:00:00Z", ["a@b.com"], [], "# Heading\n\nParagraph.")
+        import json
+        body = json.loads(route.calls[0].request.content)
+        assert body["body"]["contentType"] == "HTML"
+        assert "<h1>" in body["body"]["content"]

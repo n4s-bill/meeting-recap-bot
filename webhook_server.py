@@ -1,7 +1,9 @@
+import json
 import logging
 from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request
+from pydantic import ValidationError
 
 import config
 from models import WebhookPayload
@@ -31,7 +33,6 @@ async def health():
 @app.post("/webhook/transcript")
 async def receive_transcript(
     request: Request,
-    payload: WebhookPayload,
     x_webhook_secret: Optional[str] = Header(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
@@ -40,6 +41,21 @@ async def receive_transcript(
     if not _authenticate(x_webhook_secret, authorization):
         logger.warning("Webhook auth failed from %s", client_host)
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+    raw_body = await request.body()
+    try:
+        raw_json = json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        logger.error("Invalid JSON from %s: %s", client_host, exc)
+        raise HTTPException(status_code=422, detail="Invalid JSON")
+
+    logger.info("Raw webhook payload: %s", json.dumps(raw_json, default=str)[:2000])
+
+    try:
+        payload = WebhookPayload.model_validate(raw_json)
+    except ValidationError as exc:
+        logger.error("Payload validation failed: %s", exc)
+        raise HTTPException(status_code=422, detail=exc.errors())
 
     extra_fields = set(payload.model_extra or {})
     if extra_fields:

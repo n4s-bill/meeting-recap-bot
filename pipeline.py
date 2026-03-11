@@ -68,19 +68,29 @@ def process_meeting(payload: WebhookPayload) -> ProcessingResult:
         )
         return ProcessingResult(status=ProcessingStatus.FAILED, error=str(exc))
 
-    # Step 5: Send email
+    # Step 5: Deliver recap (send or save as draft)
     try:
-        emailer.send_recap(
-            meeting_id=meeting_id,
-            title=title,
-            date_str=payload.date,
-            to=resolved.to,
-            cc=resolved.cc,
-            summary_markdown=summary,
-        )
+        if config.EMAIL_MODE == "draft":
+            emailer.save_draft(
+                meeting_id=meeting_id,
+                title=title,
+                date_str=payload.date,
+                to=resolved.to,
+                cc=resolved.cc,
+                summary_markdown=summary,
+            )
+        else:
+            emailer.send_recap(
+                meeting_id=meeting_id,
+                title=title,
+                date_str=payload.date,
+                to=resolved.to,
+                cc=resolved.cc,
+                summary_markdown=summary,
+            )
     except Exception as exc:
         logger.error(
-            "[%s] Email send failed for '%s': %s", meeting_id, title, exc
+            "[%s] Email delivery failed for '%s': %s", meeting_id, title, exc
         )
         return ProcessingResult(status=ProcessingStatus.FAILED, error=str(exc))
 

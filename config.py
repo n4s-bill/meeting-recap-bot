@@ -18,6 +18,7 @@ WEBHOOK_SECRET: str = os.environ.get("WEBHOOK_SECRET", "")
 # ─── Optional ────────────────────────────────────────────────────────────────
 
 EMAIL_CC: str = os.environ.get("EMAIL_CC", "bill.johnson@scribendi.com")
+EMAIL_MODE: str = os.environ.get("EMAIL_MODE", "send").lower()
 OPENAI_MODEL: str = os.environ.get("OPENAI_MODEL", "gpt-4o")
 WEBHOOK_HOST: str = os.environ.get("WEBHOOK_HOST", "0.0.0.0")
 WEBHOOK_PORT: int = int(os.environ.get("WEBHOOK_PORT", "8000"))
